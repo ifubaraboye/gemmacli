@@ -1,0 +1,27 @@
+{
+  "name": "mycode",
+  "version": "0.1.0",
+  "description": "A CLI coding agent using OpenRouter + TypeScript",
+  "type": "module",
+  "bin": {
+    "mycode": "./dist/cli.js"
+  },
+  "scripts": {
+    "start": "tsx src/cli.ts",
+    "dev": "tsx src/cli.ts",
+    "dev:watch": "tsx watch src/cli.ts",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@openrouter/agent": "^0.4.0",
+    "dotenv": "^17.4.2",
+    "glob": "^11.0.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
