@@ -51,22 +51,11 @@ function summarizeArgs(name: string, args: Record<string, unknown>): string {
   return val.length > 50 ? val.slice(0, 50) + '…' : val;
 }
 
-function borderedReadLine(initialLine = ''): { line: string; first: boolean } {
-  let line = initialLine;
-  const width = process.stdout.columns || 80;
-  const border = `${GRAY}${'─'.repeat(width)}${RESET}`;
-
-  function draw(isFirst: boolean) {
-    process.stdout.write(`\r\x1b[2K`);
-    process.stdout.write(`\x1b[1G› ${line}`);
+async function main() {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error('mycode must be run in an interactive terminal');
   }
 
-  draw(true);
-
-  return { line, first: false };
-}
-
-async function main() {
   const config = loadConfig();
   initSessionDir(config.sessionDir);
   const sessionPath = newSessionPath(config.sessionDir);
@@ -79,22 +68,34 @@ async function main() {
   let isRunning = false;
   let pendingToolCalls: ToolCall[] = [];
 
-  const width = process.stdout.columns || 80;
-  const border = `${GRAY}${'─'.repeat(width)}${RESET}`;
+  const width = Math.min(process.stdout.columns || 60, 60);
+  const line = GRAY + '─'.repeat(width) + RESET;
 
-  console.log(`\n${border}`);
+  console.log(`\n${line}`);
   console.log(`  ${BOLD}mycode${RESET}  ${DIM}v0.1.0${RESET}`);
   console.log(`  ${DIM}model${RESET}  ${CYAN}${config.model}${RESET}`);
-  console.log(`${border}\n`);
+  console.log(`${line}\n`);
+
+  const restoreTerminal = () => {
+    if (process.stdin.isTTY) process.stdin.setRawMode(false);
+  };
+
+  process.on('exit', restoreTerminal);
+  process.on('SIGINT', () => {
+    restoreTerminal();
+    process.exit(130);
+  });
 
   process.stdin.setRawMode(true);
   process.stdin.resume();
   process.stdin.setEncoding('utf8');
   emitKeypressEvents(process.stdin);
 
-  function drawBorder(isFirst: boolean) {
+  function redrawInput() {
     process.stdout.write(`\r\x1b[2K`);
-    process.stdout.write(`\x1b[1G› ${currentInput}`);
+    process.stdout.write(`${GREEN}>${RESET} ${currentInput}`);
+    const offset = currentInput.length - cursorPos;
+    if (offset > 0) process.stdout.write(`\x1b[${offset}D`);
   }
 
   function printHistory() {
@@ -130,8 +131,7 @@ async function main() {
     history.push({ role: 'user', content: input });
     historyIndex = -1;
 
-    process.stdout.write('\n');
-    process.stdout.write(`${border}\n`);
+    console.log();
 
     const handleEvent = (event: AgentEvent) => {
       if (event.type === 'text') {
@@ -144,6 +144,7 @@ async function main() {
           startTime: Date.now(),
         };
         pendingToolCalls.push(tc);
+        if (pendingToolCalls.length === 1) process.stdout.write('\n');
         const args = summarizeArgs(event.name, event.args);
         console.log(`  ${YELLOW}⚡${RESET} ${DIM}${event.name}${RESET}${args ? ' ' + args : ''}`);
       } else if (event.type === 'tool_result') {
@@ -177,10 +178,10 @@ async function main() {
       messages.push({ role: 'assistant', content: `Error: ${err.message}` });
     }
 
-    process.stdout.write(`${border}\n`);
+    console.log();
     isRunning = false;
     abortController = null;
-    drawBorder(false);
+    redrawInput();
   }
 
   function handleKeypress(buffer: string, key: Key) {
@@ -202,18 +203,13 @@ async function main() {
       currentInput = '';
       cursorPos = 0;
       process.stdout.write('\n');
-      if (!input) {
-        drawBorder(false);
-        return;
-      }
+      if (!input) { redrawInput(); return; }
       runAssistant(input);
       return;
     }
 
     if (key.name === 'escape') {
-      process.stdout.write('\n');
-      process.stdout.write(`${border}\n`);
-      console.log('Goodbye!');
+      process.stdout.write('\n\nGoodbye!\n');
       process.exit(0);
     }
 
@@ -221,16 +217,15 @@ async function main() {
       if (abortController) {
         abortController.abort();
         process.stdout.write('^C\n');
+        redrawInput();
       }
-      drawBorder(false);
       return;
     }
 
     if (key.ctrl && key.name === 'l') {
       process.stdout.write('\x1b[2J\x1b[H');
       printHistory();
-      process.stdout.write(`${border}\n`);
-      drawBorder(false);
+      redrawInput();
       return;
     }
 
@@ -241,7 +236,7 @@ async function main() {
       if (historyIndex >= 0 && history[historyIndex].role === 'user') {
         currentInput = history[historyIndex].content;
         cursorPos = currentInput.length;
-        drawBorder(false);
+        redrawInput();
       }
       return;
     }
@@ -256,7 +251,7 @@ async function main() {
         currentInput = '';
       }
       cursorPos = currentInput.length;
-      drawBorder(false);
+      redrawInput();
       return;
     }
 
@@ -264,7 +259,7 @@ async function main() {
       if (cursorPos > 0) {
         currentInput = currentInput.slice(0, cursorPos - 1) + currentInput.slice(cursorPos);
         cursorPos--;
-        drawBorder(false);
+        redrawInput();
       }
       return;
     }
@@ -272,7 +267,7 @@ async function main() {
     if (key.name === 'delete') {
       if (cursorPos < currentInput.length) {
         currentInput = currentInput.slice(0, cursorPos) + currentInput.slice(cursorPos + 1);
-        drawBorder(false);
+        redrawInput();
       }
       return;
     }
@@ -309,14 +304,14 @@ async function main() {
     if (key.sequence && key.sequence.length === 1) {
       currentInput = currentInput.slice(0, cursorPos) + key.sequence + currentInput.slice(cursorPos);
       cursorPos++;
-      drawBorder(false);
+      redrawInput();
     }
   }
 
   process.stdin.on('keypress', handleKeypress);
 
   console.log(`${DIM}Type /help for commands${RESET}`);
-  drawBorder(false);
+  redrawInput();
 }
 
 main().catch((err) => {
