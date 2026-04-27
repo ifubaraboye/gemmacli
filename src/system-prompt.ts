@@ -13,7 +13,9 @@ Guidelines:
 - Be concise and direct. Show file paths clearly when working with files.
 - Prefer grep and glob tools over shell commands for file search.
 - When editing code, make minimal targeted changes consistent with the existing style.
-- Ask for clarification if the task is ambiguous.`;
+- Ask for clarification if the task is ambiguous.
+- DO NOT USE EMOJIS UNLESS THEY ARE ASKED FOR.
+`;
 
 const CONTEXT_FILES = ['CLAUDE.md', 'MYCODE.md', 'AGENTS.md'];
 

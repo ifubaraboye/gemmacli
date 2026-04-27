@@ -23,6 +23,28 @@ export interface AgentResult {
   };
 }
 
+export function formatAgentError(err: unknown): string {
+  const e = err as {
+    message?: string;
+    status?: number;
+    statusCode?: number;
+    error?: { message?: string; code?: number };
+  };
+
+  const status = e.status ?? e.statusCode ?? e.error?.code;
+  const message = e.error?.message ?? e.message ?? 'Unknown error';
+
+  if (status === 401 && /user not found/i.test(message)) {
+    return 'OpenRouter rejected the API key in OPENROUTER_API_KEY (401 User not found). Replace it with a valid key from openrouter.ai/keys.';
+  }
+
+  if (status === 401) {
+    return `OpenRouter authorization failed (401): ${message}`;
+  }
+
+  return message;
+}
+
 export async function runAgent(
   input: string | ChatMessage[],
   options?: {

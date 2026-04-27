@@ -21,6 +21,12 @@ function loadEnv(): void {
 
 loadEnv();
 
+export interface DisplayConfig {
+  toolDisplay: 'emoji' | 'grouped' | 'minimal' | 'hidden';
+  reasoning: boolean;
+  inputStyle: 'block' | 'bordered' | 'plain';
+}
+
 export interface AgentConfig {
   apiKey: string;
   model: string;
@@ -28,15 +34,21 @@ export interface AgentConfig {
   maxCost: number;
   sessionDir: string;
   allowAll: boolean;
+  display: DisplayConfig;
 }
 
 const DEFAULTS: AgentConfig = {
   apiKey: '',
-  model: 'anthropic/claude-sonnet-4-5',
+  model: 'anthropic/claude-3.5-sonnet',
   maxSteps: 10,
   maxCost: 1.0,
   sessionDir: '.mycode/sessions',
   allowAll: false,
+  display: {
+    toolDisplay: 'grouped',
+    reasoning: true,
+    inputStyle: 'bordered', // <--- Defaulted to the newly improved bordered style
+  },
 };
 
 export function loadConfig(): AgentConfig {
