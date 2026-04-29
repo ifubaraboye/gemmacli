@@ -1,16 +1,23 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { Box, Text, useInput, usePaste } from 'ink';
+import { writeFileSync } from 'fs';
 import { SlashMenu } from './SlashMenu.js';
-import { getCommandList, type CommandMeta } from '../commands.js';
+import { getCommandList } from '../commands.js';
+import { getImageFromClipboard, readImageFile, isImageFilePath } from '../utils/clipboardImage.js';
+
+export interface PastedImage {
+  path: string;
+  base64: string;
+  mediaType: string;
+}
 
 export interface InputPromptProps {
   onSubmit: (input: string) => void;
-  disabled?: boolean;
-  lastValue?: string;
+  onImagePaste?: (image: PastedImage) => void;
   history?: string[];
 }
 
-export function InputPrompt({ onSubmit, disabled, lastValue = '', history = [] }: InputPromptProps) {
+export function InputPrompt({ onSubmit, onImagePaste, history = [] }: InputPromptProps) {
   const [value, setValue] = useState('');
   const [cursor, setCursor] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -18,8 +25,45 @@ export function InputPrompt({ onSubmit, disabled, lastValue = '', history = [] }
   const [maxWidth, setMaxWidth] = useState(process.stdout.columns || 80);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [draft, setDraft] = useState('');
+  const lastImageHash = useRef('');
+  const lastPasteTime = useRef(0);
+  const ignoreNextPaste = useRef(false);
+  const nextImageId = useRef(1);
 
   const allCommands = useMemo(() => getCommandList(), []);
+
+  const insertImagePlaceholder = useCallback(() => {
+    const id = nextImageId.current++;
+    const placeholder = `[Image #${id}]`;
+    setValue((v) => {
+      const next = v.slice(0, cursor) + placeholder + v.slice(cursor);
+      return next;
+    });
+    setCursor((c) => c + placeholder.length);
+  }, [cursor]);
+
+  const handleClipboardImage = useCallback(async (): Promise<boolean> => {
+    if (!onImagePaste) return false;
+
+    try {
+      const image = await getImageFromClipboard();
+      if (!image) return false;
+
+      const now = Date.now();
+      const hash = image.base64.slice(0, 64);
+      if (hash === lastImageHash.current && now - lastPasteTime.current < 500) {
+        return true;
+      }
+      lastImageHash.current = hash;
+      lastPasteTime.current = now;
+
+      onImagePaste(image);
+      insertImagePlaceholder();
+      return true;
+    } catch {
+      return false;
+    }
+  }, [onImagePaste, insertImagePlaceholder]);
 
   const filteredCommands = useMemo(() => {
     if (!menuOpen || !value.startsWith('/')) return [];
@@ -27,12 +71,10 @@ export function InputPrompt({ onSubmit, disabled, lastValue = '', history = [] }
     return allCommands.filter((c) => c.name.toLowerCase().startsWith(query));
   }, [menuOpen, value, allCommands]);
 
-  // Update selected index when filtered list changes
   useEffect(() => {
     setSelectedIndex(0);
   }, [filteredCommands.length]);
 
-  // Update max width on resize
   useEffect(() => {
     const handler = () => setMaxWidth(process.stdout.columns || 80);
     process.stdout.on('resize', handler);
@@ -42,7 +84,52 @@ export function InputPrompt({ onSubmit, disabled, lastValue = '', history = [] }
   }, []);
 
   usePaste((pasted: string) => {
-    if (disabled) return;
+    if (ignoreNextPaste.current) {
+      ignoreNextPaste.current = false;
+      return;
+    }
+
+    const trimmed = pasted.trim();
+
+    if (onImagePaste && trimmed.startsWith('data:image/')) {
+      const match = trimmed.match(/^data:image\/(png|jpeg|jpg|gif|webp);base64,([A-Za-z0-9+/=]+)$/);
+      if (match) {
+        const now = Date.now();
+        const base64Data = match[2];
+        const hash = base64Data.slice(0, 64);
+        if (hash === lastImageHash.current && now - lastPasteTime.current < 500) {
+          return;
+        }
+        lastImageHash.current = hash;
+        lastPasteTime.current = now;
+
+        const ext = match[1] === 'jpeg' ? 'jpg' : match[1];
+        const data = Buffer.from(base64Data, 'base64');
+        const tmpFile = `/tmp/gemmacli-paste-${Date.now()}.${ext}`;
+        writeFileSync(tmpFile, data);
+        onImagePaste({ path: tmpFile, base64: base64Data, mediaType: `image/${match[1]}` });
+        insertImagePlaceholder();
+        return;
+      }
+    }
+
+    if (onImagePaste && isImageFilePath(trimmed)) {
+      void readImageFile(trimmed).then((image) => {
+        if (image) {
+          const now = Date.now();
+          const hash = image.base64.slice(0, 64);
+          if (hash === lastImageHash.current && now - lastPasteTime.current < 500) {
+            return;
+          }
+          lastImageHash.current = hash;
+          lastPasteTime.current = now;
+          onImagePaste(image);
+          insertImagePlaceholder();
+        }
+      });
+      return;
+    }
+
     setValue((v) => {
       const next = v.slice(0, cursor) + pasted + v.slice(cursor);
       if (next === '/') {
@@ -56,7 +143,16 @@ export function InputPrompt({ onSubmit, disabled, lastValue = '', history = [] }
   });
 
   useInput((input, key) => {
-    if (disabled) return;
+    // Ctrl+V (or Cmd+V on macOS): try to paste image from clipboard
+    if ((key.ctrl || key.meta) && input.toLowerCase() === 'v') {
+      void handleClipboardImage().then((handled) => {
+        if (handled) {
+          ignoreNextPaste.current = true;
+          setTimeout(() => { ignoreNextPaste.current = false; }, 100);
+        }
+      });
+      return;
+    }
 
     if (key.escape) {
       if (menuOpen) {
@@ -65,7 +161,6 @@ export function InputPrompt({ onSubmit, disabled, lastValue = '', history = [] }
       return;
     }
 
-    // History cycling with up/down when menu is closed
     if (!menuOpen && history.length > 0) {
       if (key.upArrow) {
         const nextIndex = historyIndex + 1;
@@ -125,6 +220,7 @@ export function InputPrompt({ onSubmit, disabled, lastValue = '', history = [] }
         setMenuOpen(false);
         setHistoryIndex(-1);
         setDraft('');
+        nextImageId.current = 1;
       }
       return;
     }
@@ -163,7 +259,6 @@ export function InputPrompt({ onSubmit, disabled, lastValue = '', history = [] }
     }
 
     if (key.ctrl && input === 'c') {
-      // let Ink handle exit
       return;
     }
 
@@ -184,7 +279,6 @@ export function InputPrompt({ onSubmit, disabled, lastValue = '', history = [] }
   const width = maxWidth;
   const border = '─'.repeat(width);
 
-  // Split value at cursor for rendering
   const before = value.slice(0, cursor);
   const after = value.slice(cursor);
   const charAtCursor = after[0] || ' ';
@@ -193,18 +287,14 @@ export function InputPrompt({ onSubmit, disabled, lastValue = '', history = [] }
     <Box flexDirection="column">
       <Text color="gray">{border}</Text>
       <Box>
-        {disabled ? (
-          <Text dimColor>{'› '}{lastValue}</Text>
-        ) : (
-          <Text>
-            {'› '}{before}
-            <Text inverse color="white">{charAtCursor}</Text>
-            {after.slice(1)}
-          </Text>
-        )}
+        <Text>
+          {'› '}{before}
+          <Text inverse color="white">{charAtCursor}</Text>
+          {after.slice(1)}
+        </Text>
       </Box>
       <Text color="gray">{border}</Text>
-      {!disabled && menuOpen && (
+      {menuOpen && (
         <SlashMenu
           commands={filteredCommands}
           selectedIndex={selectedIndex}
