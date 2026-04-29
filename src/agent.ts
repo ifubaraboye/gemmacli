@@ -4,7 +4,12 @@ import { stepCountIs, maxCost } from '@openrouter/agent/stop-conditions';
 import type { AgentConfig } from './config.js';
 import { tools } from './tools/index.js';
 
-export type ChatMessage = { role: 'user' | 'assistant' | 'system'; content: string };
+export type TextContent = { type: 'input_text'; text: string };
+export type ImageContent = { type: 'input_image'; imageUrl: string; detail: 'auto' };
+
+export type ChatMessage =
+  | { role: 'assistant' | 'system'; content: string }
+  | { role: 'user'; content: string | Array<TextContent | ImageContent> };
 
 export type AgentEvent =
   | { type: 'text'; delta: string }

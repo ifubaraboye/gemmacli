@@ -5,7 +5,7 @@ import { runAgentWithRetry, type AgentEvent, type ChatMessage } from './agent.js
 import { initSessionDir, newSessionPath, saveMessage, loadSession } from './session.js';
 import { dispatch, type CommandContext } from './commands.js';
 import { Header } from './components/Header.js';
-import { InputPrompt } from './components/InputPrompt.js';
+import { InputPrompt, type PastedImage } from './components/InputPrompt.js';
 import { ToolDisplay, type ToolEvent } from './components/ToolDisplay.js';
 import { StreamingText } from './components/StreamingText.js';
 import { Loader } from './components/Loader.js';
@@ -14,6 +14,11 @@ type Turn = {
   role: 'user' | 'assistant';
   content: string;
   tokens?: string;
+};
+
+type QueuedMessage = {
+  input: string;
+  images: PastedImage[];
 };
 
 function formatTokens(n: number): string {
@@ -29,13 +34,23 @@ export default function App() {
   const [currentTools, setCurrentTools] = useState<ToolEvent[]>([]);
   const [currentText, setCurrentText] = useState('');
   const [currentReasoning, setCurrentReasoning] = useState('');
-  const [lastInput, setLastInput] = useState('');
+  const [pendingImages, setPendingImages] = useState<PastedImage[]>([]);
+  const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
 
   const sessionPathRef = useRef('');
   const messagesRef = useRef<ChatMessage[]>([]);
   const assistantTextRef = useRef('');
   const toolsRef = useRef<ToolEvent[]>([]);
   const syncIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const queuedRef = useRef<QueuedMessage[]>([]);
+  const processSubmitRef = useRef<(input: string, images: PastedImage[]) => Promise<void>>(async () => {});
+
+  const isActive = status !== 'idle';
+
+  // Sync queuedRef with state
+  useEffect(() => {
+    queuedRef.current = queuedMessages;
+  }, [queuedMessages]);
 
   // Init session on mount
   useEffect(() => {
@@ -70,9 +85,17 @@ export default function App() {
     };
   }, [status]);
 
-  const handleSubmit = useCallback(async (input: string) => {
+  const processNextQueued = useCallback(async () => {
+    if (queuedRef.current.length === 0) return;
+
+    const next = queuedRef.current[0];
+    setQueuedMessages((q) => q.slice(1));
+
+    await processSubmitRef.current!(next.input, next.images);
+  }, []);
+
+  const processSubmit = useCallback(async (input: string, images: PastedImage[]) => {
     const config = configRef.current;
-    setLastInput(input);
 
     if (input.toLowerCase() === 'exit') {
       exit();
@@ -91,11 +114,9 @@ export default function App() {
       const result = await dispatch(input, ctx);
       if (result.handled) {
         if (result.clear) {
-          // /new: clear everything silently
           setHistory([]);
           messagesRef.current = [];
         } else if (result.output) {
-          // Other slash commands: show prompt + response in normal flow
           setHistory((h) => [
             ...h,
             { role: 'user', content: input },
@@ -103,15 +124,39 @@ export default function App() {
           ]);
         }
       }
+      if (queuedRef.current.length > 0) {
+        setTimeout(() => { void processNextQueued(); }, 0);
+      }
       return;
     }
 
-    // Add user message
-    messagesRef.current = [...messagesRef.current, { role: 'user', content: input }];
+    // Build user message — with images as content array if any were pasted
+    const hasImages = images.length > 0;
+    let userMessage: ChatMessage;
+
+    if (hasImages) {
+      const content: Array<{ type: 'input_text'; text: string } | { type: 'input_image'; imageUrl: string; detail: 'auto' }> = [];
+      if (input.trim()) {
+        content.push({ type: 'input_text', text: input.trim() });
+      }
+      for (const img of images) {
+        content.push({
+          type: 'input_image',
+          imageUrl: `data:${img.mediaType};base64,${img.base64}`,
+          detail: 'auto',
+        });
+      }
+      userMessage = { role: 'user', content };
+    } else {
+      userMessage = { role: 'user', content: input };
+    }
+
+    messagesRef.current = [...messagesRef.current, userMessage];
     if (sessionPathRef.current) {
-      await saveMessage(sessionPathRef.current, { role: 'user', content: input });
+      await saveMessage(sessionPathRef.current, userMessage);
     }
     setHistory((h) => [...h, { role: 'user', content: input }]);
+    setPendingImages([]);
 
     // Reset current turn state
     assistantTextRef.current = '';
@@ -176,6 +221,11 @@ export default function App() {
       setCurrentText('');
       setCurrentTools([]);
       setCurrentReasoning('');
+
+      // Process next queued message if any
+      if (queuedRef.current.length > 0) {
+        setTimeout(() => { void processNextQueued(); }, 0);
+      }
     } catch (err: any) {
       setHistory((h) => [...h, { role: 'assistant', content: `Error: ${err.message}` }]);
       setStatus('idle');
@@ -184,10 +234,29 @@ export default function App() {
       setCurrentText('');
       setCurrentTools([]);
       setCurrentReasoning('');
-    }
-  }, [exit]);
 
-  const isActive = status !== 'idle';
+      if (queuedRef.current.length > 0) {
+        setTimeout(() => { void processNextQueued(); }, 0);
+      }
+    }
+  }, [exit, processNextQueued]);
+
+  // Make processSubmit available to processNextQueued via ref
+  processSubmitRef.current = processSubmit;
+
+  const handleSubmit = useCallback(async (input: string) => {
+    if (isActive) {
+      setQueuedMessages((q) => [...q, { input, images: pendingImages }]);
+      setPendingImages([]);
+      return;
+    }
+
+    await processSubmit(input, pendingImages);
+  }, [isActive, pendingImages, processSubmit]);
+
+  const handleImagePaste = useCallback((image: PastedImage) => {
+    setPendingImages((prev) => [...prev, image]);
+  }, []);
 
   return (
     <Box flexDirection="column">
@@ -227,6 +296,15 @@ export default function App() {
         </Box>
       )}
 
+      {/* Queued messages indicator */}
+      {queuedMessages.length > 0 && (
+        <Box marginBottom={1}>
+          <Text dimColor>
+            [{queuedMessages.length} queued message{queuedMessages.length > 1 ? 's' : ''}]
+          </Text>
+        </Box>
+      )}
+
       {/* Loader above input */}
       {status === 'loading' && (
         <Box marginBottom={1}>
@@ -237,8 +315,7 @@ export default function App() {
       <Box>
         <InputPrompt
           onSubmit={handleSubmit}
-          disabled={isActive}
-          lastValue={lastInput}
+          onImagePaste={handleImagePaste}
           history={history.filter((t) => t.role === 'user').map((t) => t.content)}
         />
       </Box>

@@ -1,10 +1,8 @@
 import { mkdir, readFile, writeFile, readdir } from 'fs/promises';
 import { join, resolve } from 'path';
+import type { ChatMessage } from './agent.js';
 
-export interface SessionMessage {
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-}
+export type SessionMessage = ChatMessage;
 
 export async function initSessionDir(dir: string): Promise<void> {
   const path = resolve(dir);

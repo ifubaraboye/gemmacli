@@ -1,7 +1,9 @@
+import type { ChatMessage } from './agent.js';
+
 export interface CommandContext {
   model: string;
   setModel: (model: string) => void;
-  messages: { role: string; content: string }[];
+  messages: ChatMessage[];
   clearMessages: () => void;
   sessionPath: string;
 }
