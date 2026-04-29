@@ -1,0 +1,38 @@
+{
+  "name": "gemmacli",
+  "version": "0.1.0",
+  "description": "A minimal, modern CLI agent powered by OpenRouter",
+  "type": "module",
+  "main": "src/cli.tsx",
+  "scripts": {
+    "start": "tsx src/cli.tsx",
+    "dev": "tsx src/cli.tsx",
+    "watch": "tsx watch --exclude .sessions src/cli.tsx",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "cli",
+    "agent",
+    "openrouter",
+    "ai"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@openrouter/agent": "latest",
+    "dotenv": "^17.4.2",
+    "glob": "latest",
+    "ink": "^7.0.1",
+    "marked": "^15.0.12",
+    "marked-terminal": "^7.3.0",
+    "react": "^19.2.5",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "@types/dotenv": "^6.1.1",
+    "@types/node": "latest",
+    "@types/react": "^19.2.14",
+    "tsx": "latest",
+    "typescript": "latest"
+  }
+}
