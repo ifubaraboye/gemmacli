@@ -1,6 +1,7 @@
 import { tool } from '@openrouter/agent/tool';
 import { z } from 'zod';
 import { readFile, writeFile } from 'fs/promises';
+import { buildFileDiff } from '../utils/diff.js';
 
 export const fileEditTool = tool({
   name: 'file_edit',
@@ -18,7 +19,9 @@ export const fileEditTool = tool({
       }
       const newContent = content.replaceAll(oldString, newString);
       await writeFile(path, newContent, 'utf-8');
-      return { success: true, path, replacements: content.split(oldString).length - 1 };
+      const replacements = content.split(oldString).length - 1;
+      const diff = buildFileDiff(path, content, newContent);
+      return { success: true, path, replacements, diff };
     } catch (err: any) {
       if (err.code === 'ENOENT') return { error: `File not found: ${path}` };
       if (err.code === 'EACCES') return { error: `Permission denied: ${path}` };

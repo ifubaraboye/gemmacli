@@ -21,6 +21,7 @@
   "dependencies": {
     "@openrouter/agent": "latest",
     "clipboardy": "^5.3.1",
+    "diff": "^9.0.0",
     "dotenv": "^17.4.2",
     "glob": "latest",
     "ink": "^7.0.1",

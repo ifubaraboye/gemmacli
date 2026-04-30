@@ -17,16 +17,32 @@ export type AgentEvent =
   | { type: 'tool_result'; name: string; callId: string; output: string }
   | { type: 'reasoning'; delta: string };
 
+export type ToolResultData = {
+  name: string;
+  callId: string;
+  output: unknown;
+};
+
 export async function runAgent(
   config: AgentConfig,
   input: string | ChatMessage[],
-  options?: { onEvent?: (event: AgentEvent) => void; signal?: AbortSignal },
+  options?: {
+    onEvent?: (event: AgentEvent) => void;
+    onToolResult?: (data: ToolResultData) => void;
+    signal?: AbortSignal;
+    skillInstructions?: string;
+  },
 ) {
   const client = new OpenRouter({ apiKey: config.apiKey });
 
+  let instructions = config.systemPrompt.replace('{cwd}', process.cwd());
+  if (options?.skillInstructions) {
+    instructions = options.skillInstructions + '\n\n' + instructions;
+  }
+
   const result = client.callModel({
     model: config.model,
-    instructions: config.systemPrompt.replace('{cwd}', process.cwd()),
+    instructions,
     input: input as string | Item[],
     tools,
     stopWhen: [stepCountIs(config.maxSteps), maxCost(config.maxCost)],
@@ -59,12 +75,22 @@ export async function runAgent(
         }
       } else if (item.type === 'function_call_output') {
         const out = typeof item.output === 'string' ? item.output : JSON.stringify(item.output);
-        options.onEvent({
-          type: 'tool_result',
-          name: callNames.get(item.callId) ?? 'unknown',
+        const toolName = callNames.get(item.callId) ?? '';
+        const shouldNotTruncate = toolName === 'file_edit' || toolName === 'file_write';
+        const structuredOutput = typeof item.output === 'string' ? JSON.parse(item.output) : item.output;
+        options.onToolResult?.({
+          name: toolName,
           callId: item.callId,
-          output: out.length > 200 ? out.slice(0, 200) + '…' : out,
+          output: structuredOutput,
         });
+        if (options?.onEvent) {
+          options.onEvent({
+            type: 'tool_result',
+            name: toolName,
+            callId: item.callId,
+            output: shouldNotTruncate ? out : (out.length > 200 ? out.slice(0, 200) + '…' : out),
+          });
+        }
       } else if (item.type === 'reasoning') {
         const text = item.summary?.map((s: { text: string }) => s.text).join('') ?? '';
         if (text) options.onEvent({ type: 'reasoning', delta: text });
@@ -79,7 +105,13 @@ export async function runAgent(
 export async function runAgentWithRetry(
   config: AgentConfig,
   input: string | ChatMessage[],
-  options?: { onEvent?: (event: AgentEvent) => void; signal?: AbortSignal; maxRetries?: number },
+  options?: {
+    onEvent?: (event: AgentEvent) => void;
+    onToolResult?: (data: ToolResultData) => void;
+    signal?: AbortSignal;
+    maxRetries?: number;
+    skillInstructions?: string;
+  },
 ) {
   for (let attempt = 0, max = options?.maxRetries ?? 3; attempt <= max; attempt++) {
     try { return await runAgent(config, input, options); }

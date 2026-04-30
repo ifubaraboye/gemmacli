@@ -4,9 +4,10 @@ import { Box, Text } from 'ink';
 export interface HeaderProps {
   model: string;
   slashCommands: boolean;
+  activeSkill?: string | null;
 }
 
-export function Header({ model, slashCommands }: HeaderProps) {
+export function Header({ model, slashCommands, activeSkill }: HeaderProps) {
   const width = Math.min(process.stdout.columns || 60, 60);
   const line = '─'.repeat(width);
 
@@ -14,8 +15,11 @@ export function Header({ model, slashCommands }: HeaderProps) {
     <Box flexDirection="column" marginBottom={1}>
       <Text color="gray">{line}</Text>
       <Box>
-        <Text bold> gemmaCLI</Text>
-        <Text dimColor> v0.1.0</Text>
+        <Text bold> GEMMACLI</Text>
+        <Text dimColor> v0.0.1</Text>
+        {activeSkill && (
+          <Text color="orange">  [skill active]</Text>
+        )}
       </Box>
       <Box>
         <Text dimColor> model </Text>

@@ -13,6 +13,7 @@ import { requestInputTool } from './request-input.js';
 import { webFetchTool } from './web-fetch.js';
 import { viewImageTool } from './view-image.js';
 import { customTool } from './custom.js';
+import { findSkillsTool } from './find-skills.js';
 
 export const tools = [
   // User-defined tools — executed client-side
@@ -30,6 +31,7 @@ export const tools = [
   webFetchTool,
   viewImageTool,
   customTool,
+  findSkillsTool,
 
   // Server tools — executed by OpenRouter, no client implementation needed
   serverTool({ type: 'openrouter:web_search' }),

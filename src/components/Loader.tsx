@@ -20,7 +20,7 @@ export function Loader({ text = 'RUMINATING' }: LoaderProps) {
 
   return (
     <Box marginLeft={2}>
-      <Text color="cyan">{frames[frame]}</Text>
+      <Text color="white">{frames[frame]}</Text>
       <Text color="gray"> {text}</Text>
     </Box>
   );

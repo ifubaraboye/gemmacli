@@ -1,5 +1,8 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Box, Text, useApp } from 'ink';
+import { existsSync, readFileSync, readdirSync } from 'fs';
+import { homedir } from 'os';
+import { join } from 'path';
 import { loadConfig } from './config.js';
 import { runAgentWithRetry, type AgentEvent, type ChatMessage } from './agent.js';
 import { initSessionDir, newSessionPath, saveMessage, loadSession } from './session.js';
@@ -14,6 +17,7 @@ type Turn = {
   role: 'user' | 'assistant';
   content: string;
   tokens?: string;
+  tools?: ToolEvent[];
 };
 
 type QueuedMessage = {
@@ -23,6 +27,83 @@ type QueuedMessage = {
 
 function formatTokens(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+}
+
+const SKILL_PATTERNS = [
+  /(?:use|with|using|via)\s+(?:my|your|the)?\s*(\w+[-\s]?\w*)\s+(?:skill|expertise)/i,
+  /(?:my|your|the)\s+(\w+[-\s]?\w*)\s+(?:skill|expertise)/i,
+  /(?:apply|follow)\s+(?:the)?\s*(\w+[-\s]?\w*)\s+(?:skill|guidelines)/i,
+  /(\w+[-\s]?\w*)\s+(?:skill|guidelines)/i,
+];
+
+function fuzzyMatch(candidate: string, skills: string[]): string | null {
+  const lower = candidate.toLowerCase();
+
+  for (const skill of skills) {
+    if (skill.toLowerCase() === lower) return skill;
+  }
+
+  for (const skill of skills) {
+    if (skill.toLowerCase().includes(lower)) return skill;
+    if (lower.includes(skill.toLowerCase())) return skill;
+  }
+
+  let best: string | null = null;
+  let bestScore = Infinity;
+  for (const skill of skills) {
+    const dist = levenshtein(lower, skill.toLowerCase());
+    if (dist <= 3 && dist < bestScore) {
+      bestScore = dist;
+      best = skill;
+    }
+  }
+  return best;
+}
+
+function levenshtein(a: string, b: string): number {
+  const m = a.length;
+  const n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, (_, i) =>
+    Array.from({ length: n + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0))
+  );
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      if (a[i - 1] === b[j - 1]) {
+        dp[i][j] = dp[i - 1][j - 1];
+      } else {
+        dp[i][j] = 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+      }
+    }
+  }
+  return dp[m][n];
+}
+
+function detectSkillMention(input: string): string | null {
+  const skillsDir = join(homedir(), '.agents', 'skills');
+  if (!existsSync(skillsDir)) return null;
+
+  let dirs: string[];
+  try {
+    dirs = readdirSync(skillsDir);
+  } catch {
+    return null;
+  }
+
+  for (const pattern of SKILL_PATTERNS) {
+    const match = input.match(pattern);
+    if (match) {
+      const candidate = match[1].trim();
+      const matched = fuzzyMatch(candidate, dirs);
+      if (matched) {
+        const skillPath = join(skillsDir, matched, 'SKILL.md');
+        if (existsSync(skillPath)) {
+          return matched;
+        }
+      }
+    }
+  }
+
+  return null;
 }
 
 export default function App() {
@@ -36,11 +117,13 @@ export default function App() {
   const [currentReasoning, setCurrentReasoning] = useState('');
   const [pendingImages, setPendingImages] = useState<PastedImage[]>([]);
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
+  const [activeSkill, setActiveSkill] = useState<string | null>(null);
 
   const sessionPathRef = useRef('');
   const messagesRef = useRef<ChatMessage[]>([]);
   const assistantTextRef = useRef('');
   const toolsRef = useRef<ToolEvent[]>([]);
+  const structuredDiffRef = useRef<Map<string, { success?: boolean; path?: string; replacements?: number; isNew?: boolean; diff?: string }>>(new Map());
   const syncIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const queuedRef = useRef<QueuedMessage[]>([]);
   const processSubmitRef = useRef<(input: string, images: PastedImage[]) => Promise<void>>(async () => {});
@@ -102,6 +185,19 @@ export default function App() {
       return;
     }
 
+    // Auto-detect skill mentions in user messages
+    let skillContent: string | null = null;
+    const detectedSkill = detectSkillMention(input);
+    if (detectedSkill && detectedSkill !== activeSkill) {
+      const skillPath = join(homedir(), '.agents', 'skills', detectedSkill, 'SKILL.md');
+      try {
+        skillContent = readFileSync(skillPath, 'utf-8');
+        setActiveSkill(skillContent);
+      } catch {
+        // ignore load failures
+      }
+    }
+
     // Slash commands — handled locally, not sent to model
     if (config.slashCommands && input.startsWith('/')) {
       const ctx: CommandContext = {
@@ -110,6 +206,8 @@ export default function App() {
         messages: messagesRef.current,
         clearMessages: () => { messagesRef.current = []; },
         sessionPath: sessionPathRef.current,
+        activeSkill,
+        setActiveSkill: (skill: string | null) => { setActiveSkill(skill); },
       };
       const result = await dispatch(input, ctx);
       if (result.handled) {
@@ -193,8 +291,19 @@ export default function App() {
       }
     };
 
+    const handleToolResult = (data: { name: string; callId: string; output: unknown }) => {
+      if (data.name === 'file_edit' || data.name === 'file_write') {
+        const parsed = data.output as { success?: boolean; path?: string; replacements?: number; isNew?: boolean; diff?: string; error?: string };
+        structuredDiffRef.current.set(data.callId, parsed);
+      }
+    };
+
     try {
-      const result = await runAgentWithRetry(config, messagesRef.current, { onEvent: handleEvent });
+      const result = await runAgentWithRetry(config, messagesRef.current, {
+        onEvent: handleEvent,
+        onToolResult: handleToolResult,
+        skillInstructions: skillContent ?? activeSkill ?? undefined,
+      });
 
       // Flush final state from refs
       setCurrentText(assistantTextRef.current);
@@ -211,13 +320,22 @@ export default function App() {
         await saveMessage(sessionPathRef.current, { role: 'assistant', content: assistantContent });
       }
 
-      // Move to history
-      setHistory((h) => [...h, { role: 'assistant', content: assistantContent, tokens: tokenLine }]);
+      // Move to history — include tool snapshot so diffs persist
+      // Merge structured diffs from structuredDiffRef into the tool events
+      const toolsWithDiffs = toolsRef.current.map(tool => {
+        if (tool.type === 'tool_result' && (tool.name === 'file_edit' || tool.name === 'file_write')) {
+          const diffData = structuredDiffRef.current.get(tool.callId);
+          return { ...tool, diffData };
+        }
+        return tool;
+      });
+      setHistory((h) => [...h, { role: 'assistant', content: assistantContent, tokens: tokenLine, tools: toolsWithDiffs }]);
 
       // Reset current turn
       setStatus('idle');
       assistantTextRef.current = '';
       toolsRef.current = [];
+      structuredDiffRef.current = new Map();
       setCurrentText('');
       setCurrentTools([]);
       setCurrentReasoning('');
@@ -227,10 +345,11 @@ export default function App() {
         setTimeout(() => { void processNextQueued(); }, 0);
       }
     } catch (err: any) {
-      setHistory((h) => [...h, { role: 'assistant', content: `Error: ${err.message}` }]);
+      setHistory((h) => [...h, { role: 'assistant', content: `Error: ${err.message}`, tools: [...toolsRef.current] }]);
       setStatus('idle');
       assistantTextRef.current = '';
       toolsRef.current = [];
+      structuredDiffRef.current = new Map();
       setCurrentText('');
       setCurrentTools([]);
       setCurrentReasoning('');
@@ -239,7 +358,7 @@ export default function App() {
         setTimeout(() => { void processNextQueued(); }, 0);
       }
     }
-  }, [exit, processNextQueued]);
+  }, [exit, processNextQueued, activeSkill]);
 
   // Make processSubmit available to processNextQueued via ref
   processSubmitRef.current = processSubmit;
@@ -260,7 +379,7 @@ export default function App() {
 
   return (
     <Box flexDirection="column">
-      <Header model={configRef.current.model} slashCommands={configRef.current.slashCommands} />
+      <Header model={configRef.current.model} slashCommands={configRef.current.slashCommands} activeSkill={activeSkill} />
 
       {/* History */}
       {history.map((turn, i) => (
@@ -272,6 +391,9 @@ export default function App() {
             </Box>
           ) : (
             <Box flexDirection="column">
+              {turn.tools && turn.tools.length > 0 && (
+                <ToolDisplay events={turn.tools} display={configRef.current.display} isActive={false} />
+              )}
               <StreamingText text={turn.content} streaming={false} />
               {turn.tokens && (
                 <Box marginTop={1}>
@@ -286,7 +408,7 @@ export default function App() {
       {/* Current turn */}
       {isActive && (currentText || currentTools.length > 0 || currentReasoning) && (
         <Box flexDirection="column">
-          <ToolDisplay events={currentTools} display={configRef.current.display} />
+          <ToolDisplay events={currentTools} display={configRef.current.display} isActive={true} />
           <StreamingText
             text={currentText}
             streaming={true}

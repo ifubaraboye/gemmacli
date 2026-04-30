@@ -22,7 +22,7 @@ export interface AgentConfig {
 
 const DEFAULTS: AgentConfig = {
   apiKey: '',
-  model: 'google/gemma-4-31b-it:free',
+  model: '',
   systemPrompt: [
     'You are Gemma, a coding assistant with access to tools for reading, writing, editing, and searching files, and running shell commands.',
     '',

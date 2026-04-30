@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { Box, Text, useInput, usePaste } from 'ink';
 import { writeFileSync } from 'fs';
+import { homedir } from 'os';
 import { SlashMenu } from './SlashMenu.js';
 import { getCommandList } from '../commands.js';
 import { getImageFromClipboard, readImageFile, isImageFilePath } from '../utils/clipboardImage.js';
@@ -283,6 +284,10 @@ export function InputPrompt({ onSubmit, onImagePaste, history = [] }: InputPromp
   const after = value.slice(cursor);
   const charAtCursor = after[0] || ' ';
 
+  const cwd = process.cwd();
+  const home = homedir();
+  const displayCwd = home && cwd.startsWith(home) ? '~' + cwd.slice(home.length) : cwd;
+
   return (
     <Box flexDirection="column">
       <Text color="gray">{border}</Text>
@@ -294,6 +299,11 @@ export function InputPrompt({ onSubmit, onImagePaste, history = [] }: InputPromp
         </Text>
       </Box>
       <Text color="gray">{border}</Text>
+      {!menuOpen && (
+        <Box>
+          <Text dimColor>{displayCwd}</Text>
+        </Box>
+      )}
       {menuOpen && (
         <SlashMenu
           commands={filteredCommands}
